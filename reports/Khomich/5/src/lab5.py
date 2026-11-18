@@ -75,20 +75,13 @@ def generate_data():
     x_test_raw = x[split_idx:]
     y_test_raw = y[split_idx:]
 
-    # Параметры нормализации вычисляются только по обучающей выборке,
-    # чтобы не допустить утечки данных из тестовой части.
-    y_mean = float(y_train_raw.mean())
-    y_std = float(y_train_raw.std())
-
-    y_train_norm = (y_train_raw - y_mean) / y_std
-    y_test_norm = (y_test_raw - y_mean) / y_std
-
+    # Данные подаются в сеть в исходном масштабе, без нормализации.
     print("\nПараметры временного ряда:")
     print(f"  длина ряда:            {N_POINTS}")
     print(f"  обучающая часть:       {len(y_train_raw)} точек")
     print(f"  тестовая часть:        {len(y_test_raw)} точек")
-    print(f"  среднее (по train):    {y_mean:.6f}")
-    print(f"  СКО (по train):        {y_std:.6f}")
+    print(f"  среднее (по train):    {y_train_raw.mean():.6f}")
+    print(f"  СКО (по train):        {y_train_raw.std():.6f}")
     print(f"  диапазон y:            [{y.min():.4f}; {y.max():.4f}]")
 
     return {
@@ -98,10 +91,8 @@ def generate_data():
         "y_train_raw": y_train_raw,
         "x_test_raw": x_test_raw,
         "y_test_raw": y_test_raw,
-        "y_train_norm": y_train_norm,
-        "y_test_norm": y_test_norm,
-        "y_mean": y_mean,
-        "y_std": y_std,
+        "y_train": y_train_raw,
+        "y_test": y_test_raw,
         "split_idx": split_idx,
     }
 
@@ -250,7 +241,7 @@ def plot_loss_curve(history, path):
     ax.semilogy(range(1, len(history) + 1), history, color="tab:red")
     ax.set_title("Изменение ошибки в зависимости от итерации")
     ax.set_xlabel("Итерация (эпоха)")
-    ax.set_ylabel("MSE (нормированная величина)")
+    ax.set_ylabel("MSE")
     ax.grid(True, which="both", alpha=0.3)
 
     plt.tight_layout()
@@ -265,38 +256,34 @@ def plot_loss_curve(history, path):
 def main():
     data = generate_data()
 
-    X_train, Y_train_norm = make_windows(data["y_train_norm"], N_INPUTS)
-    X_test, Y_test_norm = make_windows(data["y_test_norm"], N_INPUTS)
+    X_train, Y_train = make_windows(data["y_train"], N_INPUTS)
+    X_test, Y_test = make_windows(data["y_test"], N_INPUTS)
 
     # Целевые позиции x для окон
     x_train_targets = data["x_train_raw"][N_INPUTS:]
     x_test_targets = data["x_test_raw"][N_INPUTS:]
 
-    # Эталонные значения в исходном масштабе
-    Y_train_true = Y_train_norm * data["y_std"] + data["y_mean"]
-    Y_test_true = Y_test_norm * data["y_std"] + data["y_mean"]
-
     # Для выбора скорости обучения из обучающей части выделяется
     # валидационная выборка (последние 15 % окон). Тестовая выборка
     # при подборе гиперпараметра не используется.
     n_val = int(len(X_train) * VALIDATION_FRACTION)
-    X_fit, Y_fit = X_train[:-n_val], Y_train_norm[:-n_val]
-    X_val, Y_val = X_train[-n_val:], Y_train_norm[-n_val:]
+    X_fit, Y_fit = X_train[:-n_val], Y_train[:-n_val]
+    X_val, Y_val = X_train[-n_val:], Y_train[-n_val:]
 
     print("\nРазмеры выборок после формирования окон:")
-    print(f"  X_train (итоговая): {X_train.shape}, Y_train: {Y_train_norm.shape}")
+    print(f"  X_train (итоговая): {X_train.shape}, Y_train: {Y_train.shape}")
     print(f"  X_fit:              {X_fit.shape}, Y_fit:  {Y_fit.shape}")
     print(f"  X_val:              {X_val.shape}, Y_val:  {Y_val.shape}")
-    print(f"  X_test:             {X_test.shape}, Y_test: {Y_test_norm.shape}")
+    print(f"  X_test:             {X_test.shape}, Y_test: {Y_test.shape}")
 
     X_fit_t = torch.tensor(X_fit, dtype=torch.float32, device=DEVICE)
     Y_fit_t = torch.tensor(Y_fit, dtype=torch.float32, device=DEVICE)
     X_val_t = torch.tensor(X_val, dtype=torch.float32, device=DEVICE)
     Y_val_t = torch.tensor(Y_val, dtype=torch.float32, device=DEVICE)
     X_train_t = torch.tensor(X_train, dtype=torch.float32, device=DEVICE)
-    Y_train_t = torch.tensor(Y_train_norm, dtype=torch.float32, device=DEVICE)
+    Y_train_t = torch.tensor(Y_train, dtype=torch.float32, device=DEVICE)
     X_test_t = torch.tensor(X_test, dtype=torch.float32, device=DEVICE)
-    Y_test_t = torch.tensor(Y_test_norm, dtype=torch.float32, device=DEVICE)
+    Y_test_t = torch.tensor(Y_test, dtype=torch.float32, device=DEVICE)
 
     # ------------------------------------------------------------------
     # Подбор скорости обучения. Результаты работы приводятся для
@@ -307,10 +294,10 @@ def main():
     best = None
     for lr in LEARNING_RATES:
         model, _ = train_model(X_fit_t, Y_fit_t, lr)
-        fit_pred_norm = predict(model, X_fit_t)
-        val_pred_norm = predict(model, X_val_t)
-        fit_mse = float(np.mean((fit_pred_norm - Y_fit.ravel()) ** 2))
-        val_mse = float(np.mean((val_pred_norm - Y_val.ravel()) ** 2))
+        fit_pred = predict(model, X_fit_t)
+        val_pred = predict(model, X_val_t)
+        fit_mse = float(np.mean((fit_pred - Y_fit.ravel()) ** 2))
+        val_mse = float(np.mean((val_pred - Y_val.ravel()) ** 2))
         lr_rows.append({
             "Скорость обучения": lr,
             "MSE на обучении": fit_mse,
@@ -334,16 +321,13 @@ def main():
     lr_table.to_csv(REPORT_DIR / "lab5_lr_selection.csv", index=False)
 
     # ------------------------------------------------------------------
-    # Прогноз и денормализация
+    # Прогноз (данные в исходном масштабе, денормализация не требуется)
     # ------------------------------------------------------------------
-    train_pred_norm = predict(model, X_train_t)
-    test_pred_norm = predict(model, X_test_t)
+    train_pred = predict(model, X_train_t)
+    test_pred = predict(model, X_test_t)
 
-    train_pred = train_pred_norm * data["y_std"] + data["y_mean"]
-    test_pred = test_pred_norm * data["y_std"] + data["y_mean"]
-
-    train_true = Y_train_true.ravel()
-    test_true = Y_test_true.ravel()
+    train_true = Y_train.ravel()
+    test_true = Y_test.ravel()
 
     train_metrics = regression_metrics(train_true, train_pred)
     test_metrics = regression_metrics(test_true, test_pred)
